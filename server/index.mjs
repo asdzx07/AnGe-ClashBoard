@@ -4533,6 +4533,82 @@ app.get('/api/health', (_req, res) => {
   })
 })
 
+// Mihomo 内核版本管理（P1）。版本唯一来源 core/mihomo.version。
+app.get('/api/core/version', async (_req, res) => {
+  try {
+    const { getPinnedVersion, getInstalledVersion } = await import('./core/manager.mjs')
+    res.json({
+      pinned: await getPinnedVersion(),
+      installed: await getInstalledVersion(),
+    })
+  } catch (err) {
+    res.status(500).json({ error: String(err?.message || err) })
+  }
+})
+
+app.get('/api/core/check-update', async (_req, res) => {
+  try {
+    const { checkForUpdate } = await import('./core/manager.mjs')
+    res.json(await checkForUpdate())
+  } catch (err) {
+    res.status(500).json({ error: String(err?.message || err) })
+  }
+})
+
+app.post('/api/core/upgrade', express.json(), async (req, res) => {
+  try {
+    const { upgradeTo } = await import('./core/manager.mjs')
+    res.json(await upgradeTo(req.body?.version, { arch: req.body?.arch }))
+  } catch (err) {
+    res.status(500).json({ error: String(err?.message || err) })
+  }
+})
+
+// 订阅管理（P2）
+const subStore = await import('./subscriptions/store.mjs')
+const subFetcher = await import('./subscriptions/fetcher.mjs')
+subStore.ensureTables(db)
+
+app.get('/api/subscriptions', (_req, res) => {
+  res.json({ subscriptions: subStore.listSubscriptions(db) })
+})
+
+app.post('/api/subscriptions', express.json(), (req, res) => {
+  try {
+    res.status(201).json(subStore.addSubscription(db, req.body || {}))
+  } catch (err) {
+    res.status(400).json({ error: String(err?.message || err) })
+  }
+})
+
+app.put('/api/subscriptions/:id', express.json(), (req, res) => {
+  try {
+    const updated = subStore.updateSubscription(db, Number(req.params.id), req.body || {})
+    if (!updated) return res.status(404).json({ error: 'not found' })
+    res.json(updated)
+  } catch (err) {
+    res.status(400).json({ error: String(err?.message || err) })
+  }
+})
+
+app.delete('/api/subscriptions/:id', (req, res) => {
+  const ok = subStore.deleteSubscription(db, Number(req.params.id))
+  res.json({ deleted: ok })
+})
+
+app.post('/api/subscriptions/:id/refresh', async (req, res) => {
+  const id = Number(req.params.id)
+  const sub = subStore.getSubscription(db, id)
+  if (!sub) return res.status(404).json({ error: 'not found' })
+  try {
+    const content = await subFetcher.fetchSubscription(sub.url)
+    const nodeCount = subFetcher.countNodesHeuristic(content)
+    res.json(subStore.recordFetch(db, id, { content, nodeCount }))
+  } catch (err) {
+    res.json(subStore.recordFetch(db, id, { error: String(err?.message || err) }))
+  }
+})
+
 app.get('/api/openwrt-rule-source/config', (_req, res) => {
   res.json({
     config: sanitizeOpenWrtRuleSourceSshConfig(readOpenWrtRuleSourceSshConfig()),
